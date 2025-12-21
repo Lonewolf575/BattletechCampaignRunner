@@ -1,0 +1,302 @@
+
+<!DOCTYPE html>
+<meta charset="utf-8" />
+<style>
+  body { margin: 0; background:#0f172a; color:#e5e7eb; font: 14px system-ui; }
+  .toolbar { padding: 8px 12px; position: fixed; inset: 0 auto auto 0; z-index: 10; }
+  button { margin-right: 8px; }
+  svg { width: 100vw; height: 100vh; display:block; }
+  .map {fill:#4f7cac00}
+  .hex { fill:#4f7cac00; stroke:#ffffff2a; stroke-width:1.25; }
+  .hex:hover { stroke:#ffffffbb; }
+  .item { cursor: grab; }
+  .item:active { cursor: grabbing; }
+
+  /* Label styling */
+  .hex-label {
+    font: 600 10px/1 system-ui, sans-serif;
+    fill: #e5e7eb00;         /* light text for dark background */
+    pointer-events: none;  /* don't block mouse interaction with hexes */
+    text-anchor: middle;   /* center horizontally */
+    user-select: none;}
+</style>
+
+<div class="toolbar">
+  <button id="reset">Reset view</button>
+</div>
+
+<svg id="hexsvg" viewBox="0 0 2000 2000" aria-label="Production line map">
+  <!-- Everything lives inside viewport so we can pan/zoom -->
+  <g id="viewport">
+    <g id= "map">
+      <image href ="data\Thresh 2025-12-19-00-00.svg" width="3000" height="3000" />
+    </g>
+    <g id="grid"></g>
+    <g id="items"></g>
+  </g>
+</svg>
+
+<script>
+  // ===== Hex math (flat-topped axial coordinates) =====
+  const size = 30;                 // hex radius
+  const spacing = 0;               // extra gap between rows/cols TODO: This is causing snapping issues. Grid snapping isn't accounting for spacing.
+  const w = size * 2;
+  const h = Math.sqrt(3) * size;
+
+  const ROWS = 1600 / size, COLS = 2000 / size ;
+  const labelYOffset = size * 0.55; // move label to bottom inside the hex (≈ half radius downward)
+  // Generate points for a flat-topped hex polygon centered at (cx, cy)
+  function hexPoints(cx, cy) {
+    const pts = [];
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI / 3) * i; // 0,60,120,...
+      const x = cx + size * Math.cos(angle);
+      const y = cy + size * Math.sin(angle);
+      pts.push(`${x},${y}`);
+    }
+    return pts.join(' ');
+  }
+
+  // Layout: columns offset vertically (flat-top)
+  function hexCenterFromColRow(col, row) {
+    const cx = col * (w * 0.75 + spacing) + w / 2;
+    const cy = row * (h + spacing) + h / 2 + ((col % 2) ? h / 2 : 0);
+    return { cx, cy };
+  }
+
+  // Approximate axial coords from pixel (flat-top) using inverse transform
+  // This uses a common axial mapping for flat-top grids.
+  function pixelToAxial(x, y) {
+    const q = ( (2/3) * (x - w/2) ) / size;
+    const r = ( (-1/3) * (x - w/2) + (Math.sqrt(3)/3) * (y - h/2) ) / size;
+    return axialRound({ q, r });
+  }
+
+  // Round fractional axial coords to nearest hex
+  function axialRound({ q, r }) {
+    const x = q;
+    const z = r;
+    const y = -x - z;
+    let rx = Math.round(x), ry = Math.round(y), rz = Math.round(z);
+
+    const x_diff = Math.abs(rx - x);
+    const y_diff = Math.abs(ry - y);
+    const z_diff = Math.abs(rz - z);
+
+    if (x_diff > y_diff && x_diff > z_diff) {
+      rx = -ry - rz;
+    } else if (y_diff > z_diff) {
+      ry = -rx - rz;
+    } else {
+      rz = -rx - ry;
+    }
+    return { q: rx, r: rz };
+  }
+
+  // Convert axial back to pixel center (flat-top)
+  function axialToPixel(q, r) {
+    const x = size * (3/2) * q + w/2;
+    const y = size * (Math.sqrt(3)/2 * q + Math.sqrt(3) * r) + h/2;
+    // Add spacing roughly by distributing into x/y; for simplicity we ignore spacing here and depend on viewBox scale.
+    return { x, y };
+  }
+
+  // ===== Build grid =====
+  const svg = document.getElementById('hexsvg');
+  const viewport = document.getElementById('viewport');
+  const gridG = document.getElementById('grid');
+  const itemsG = document.getElementById('items');
+  const mapG = document.g
+
+
+
+  for (let col = 0; col < COLS; col++) {
+    for (let row = 0; row < ROWS; row++) {
+      const { cx, cy } = hexCenterFromColRow(col, row);
+
+      // Hex polygon
+      const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      poly.setAttribute('class', 'hex');
+      poly.setAttribute('points', hexPoints(cx, cy));
+      poly.dataset.col = col;
+      poly.dataset.row = row;
+      gridG.appendChild(poly);
+
+      // Label at bottom of each hex: "row,col"
+      const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      label.setAttribute('class', 'hex-label');
+      label.setAttribute('x', cx);
+      label.setAttribute('y', cy + labelYOffset);
+      // You can change the content format here, e.g., `${row}:${col}` or `r${row} c${col}`
+      label.textContent = `${col},${row}`;
+      gridG.appendChild(label);
+    }
+  }
+
+  // ===== Add draggable items (icons) =====
+  // Example items: use circles; replace with ... for real icons.
+  function addItem(id, x, y, color = '#f59e0b') {
+    const item = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    item.setAttribute('class', 'item');
+    item.setAttribute('r', 12);
+    item.setAttribute('cx', x);
+    item.setAttribute('cy', y);
+    item.setAttribute('fill', color);
+    item.setAttribute('stroke', '#1f2937');
+    item.setAttribute('stroke-width', '1.5');
+    item.setAttribute('tabindex', '0');
+    item.dataset.id = id;
+    itemsG.appendChild(item);
+    makeDraggable(item);
+    return item;
+  }
+
+  const i1 = addItem('mixer', 180, 200, '#f59e0b');   // orange
+  const i2 = addItem('oven', 380, 320, '#22c55e');     // green
+  const i3 = addItem('packer', 520, 180, '#3b82f6');   // blue
+
+  // ===== Drag logic with snapping =====
+  let dragging = null;
+  let dragOffset = { x: 0, y: 0 };
+
+
+  let M = new DOMMatrix(); // identity: a,b,c,d,e,f → (1,0,0,1,0,0)
+  function applyMatrix() {
+    // Set as transform attribute
+    viewport.setAttribute('transform',
+      `matrix(${M.a} ${M.b} ${M.c} ${M.d} ${M.e} ${M.f})`);
+  }
+
+
+  function svgPointFromClient(clientX, clientY) {
+    const pt = svg.createSVGPoint();
+    pt.x = clientX; pt.y = clientY;
+    const ctm = viewport.getScreenCTM().inverse();
+    return pt.matrixTransform(ctm);
+  }
+
+  function makeDraggable(el) {
+    el.addEventListener('pointerdown', (e) => {
+      el.setPointerCapture(e.pointerId);
+      const p = svgPointFromClient(e.clientX, e.clientY);
+      dragging = el;
+      dragOffset.x = p.x - parseFloat(el.getAttribute('cx') || el.getAttribute('x') || 0);
+      dragOffset.y = p.y - parseFloat(el.getAttribute('cy') || el.getAttribute('y') || 0);
+    });
+
+    el.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      const p = svgPointFromClient(e.clientX, e.clientY);
+      const x = p.x - dragOffset.x;
+      const y = p.y - dragOffset.y;
+      // move
+      if (dragging.tagName === 'circle') {
+        dragging.setAttribute('cx', x);
+        dragging.setAttribute('cy', y);
+      } else {
+        dragging.setAttribute('x', x);
+        dragging.setAttribute('y', y);
+      }
+    });
+
+    el.addEventListener('pointerup', (e) => {
+      if (!dragging) return;
+      // Snap to nearest hex via axial coordinates
+      const p = svgPointFromClient(e.clientX, e.clientY);
+      const axial = pixelToAxial(p.x, p.y);
+      const center = axialToPixel(axial.q, axial.r);
+      if (dragging.tagName === 'circle') {
+        dragging.setAttribute('cx', center.x);
+        dragging.setAttribute('cy', center.y);
+      } else {
+        dragging.setAttribute('x', center.x);
+        dragging.setAttribute('y', center.y);
+      }
+      dragging.releasePointerCapture(e.pointerId);
+      dragging = null;
+      // Persist/update your data model:
+      // saveItemPosition(dragging.dataset.id, axial.q, axial.r);
+    });
+  }
+
+  // ===== Pan & zoom on viewport group =====
+  let isPanning = false, panLast = { x: 0, y: 0 };
+  let viewTransform = { x: 0, y: 0, k: 1 };
+
+  svg.addEventListener('pointerdown', (e) => {
+    if (e.target === svg || e.target.classList[0] === "hex") {
+
+      isPanning = true;
+      panLast.x = e.clientX;
+      panLast.y = e.clientY;
+    }
+  });
+
+  svg.addEventListener('pointermove', (e) => {
+    if (!isPanning) return;
+    const dx = e.clientX - panLast.x;
+    const dy = e.clientY - panLast.y;
+    panLast.x = e.clientX; panLast.y = e.clientY;
+    const d = screenDeltaToSvg(dx, dy);
+    //viewTransform.x = d.x;
+    //viewTransform.y = d.y;
+    M = M.translate(dx, dy);
+    applyMatrix();
+
+  });
+
+  svg.addEventListener('pointerup', () => { isPanning = false; });
+
+
+// Wheel zoom around cursor point
+const ZOOM = 1.1;
+svg.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const factor = (e.deltaY < 0) ? ZOOM : 1/ZOOM;
+  // Get cursor position in SVG coords under current transform
+  const inv = viewport.getScreenCTM().inverse();
+  const invDom = new DOMMatrix([inv.a, inv.b, inv.c, inv.d, inv.e, inv.f]);
+  const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(invDom);
+
+  // T(p) * S(factor) * T(-p) composed with current M
+  M = M.translate(p.x, p.y).scale(factor).translate(-p.x, -p.y);
+  applyMatrix();
+}, { passive: false });
+
+
+  function applyTransform() {
+    viewport.setAttribute('transform',
+      `translate(${viewTransform.x},${viewTransform.y}) scale(${viewTransform.k})`);
+  }
+
+
+function screenDeltaToSvg(dx, dy) {
+  const inv = viewport.getScreenCTM().inverse(); // SVGMatrix
+  // Convert to DOMMatrix for convenience if needed
+  const invDom = new DOMMatrix([inv.a, inv.b, inv.c, inv.d, inv.e, inv.f]);
+  const p = new DOMPoint(dx, dy).matrixTransform(invDom);
+  return { x: p.x, y: p.y };
+}
+
+
+  document.getElementById('reset').addEventListener('click', () => {
+    viewTransform = { x: 0, y: 0, k: 1 };
+    applyTransform();
+  });
+
+
+  //async function loadData() {
+  //  try {
+  //    const res = await fetch('/data/mapData.json'); // path relative to your site
+  //    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  //    const data = await res.json();
+  //    console.log(JSON.stringify(data, null));
+  //    //document.getElementById('out').textContent = JSON.stringify(data, null, 2);
+  //  } catch (err) {
+  //    console.error('Failed to load JSON:', err);
+  //  }
+  //}
+
+  //loadData();
+
+</script>
